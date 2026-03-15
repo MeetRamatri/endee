@@ -4,4 +4,5 @@ sentence-transformers>=3.0.0
 numpy
 requests>=2.31.0
 streamlit>=1.35.0
+google-genai>=1.0.0
 python-dotenv>=1.0.0
