@@ -1,5 +1,6 @@
 endee
 pypdf>=4.3.0
+pdfplumber>=0.11.0
 sentence-transformers>=3.0.0
 numpy
 requests>=2.31.0

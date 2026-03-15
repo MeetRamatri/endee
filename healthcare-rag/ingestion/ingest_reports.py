@@ -23,10 +23,27 @@ WORDS_PER_CHUNK = 400
 
 # ── PDF text extraction ────────────────────────────────────────────────────
 
-def extract_text(pdf_path: Path) -> str:
-    reader = PdfReader(str(pdf_path))
-    pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n".join(pages).strip()
+def extract_text(pdf_path) -> str:
+    path = str(pdf_path)
+
+    # Try pdfplumber first — handles more complex layouts
+    try:
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:
+            pages = [p.extract_text() or "" for p in pdf.pages]
+        text = "\n".join(pages).strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    # Fallback to pypdf
+    try:
+        reader = PdfReader(path)
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages).strip()
+    except Exception:
+        return ""
 
 
 # ── Chunking ───────────────────────────────────────────────────────────────
@@ -49,76 +66,70 @@ def get_index():
     if ENDEE_TOKEN:
         client.set_auth_token(ENDEE_TOKEN)
 
-    existing = client.list_indexes()  # returns list of index name strings
-    if INDEX_NAME not in existing:
-        print(f"[Endee] Creating index '{INDEX_NAME}' …")
+    try:
         client.create_index(
             name=INDEX_NAME,
             dimension=VECTOR_DIM,
             space_type="cosine",
             precision=Precision.INT8,
         )
-    else:
-        print(f"[Endee] Using existing index '{INDEX_NAME}'")
+        print(f"[Endee] Created index '{INDEX_NAME}'")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "conflict" in str(e).lower():
+            print(f"[Endee] Using existing index '{INDEX_NAME}'")
+        else:
+            raise
 
     return client.get_index(name=INDEX_NAME)
 
 
-# ── Main pipeline ──────────────────────────────────────────────────────────
+# ── Single-file ingestion (used by Streamlit UI) ───────────────────────────
+
+def ingest_pdf(file_path: str) -> dict:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PDF not found: {file_path}")
+
+    model = SentenceTransformer(EMBED_MODEL)
+    index = get_index()
+
+    text = extract_text(path)
+    if not text:
+        raise ValueError(f"No extractable text in '{path.name}'.")
+
+    chunks = split_into_chunks(text)
+    vectors = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False)
+
+    items = [
+        {
+            "id": str(uuid.uuid4()),
+            "vector": vec.tolist(),
+            "meta": {"text": chunk, "filename": path.name, "chunk_index": i},
+        }
+        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+    ]
+
+    index.upsert(items)
+    return {"filename": path.name, "chunks_ingested": len(items)}
+
+
+# ── Bulk ingestion from data/ folder (CLI) ─────────────────────────────────
 
 def ingest_all():
     pdf_files = sorted(DATA_DIR.glob("*.pdf"))
     if not pdf_files:
-        print(f"[!] No PDF files found in '{DATA_DIR}'. Add reports and re-run.")
+        print(f"[!] No PDF files found in '{DATA_DIR}'.")
         return
 
-    print(f"[Info] Found {len(pdf_files)} PDF file(s) in '{DATA_DIR}'")
-    print(f"[Info] Loading embedding model: {EMBED_MODEL} …")
-    model = SentenceTransformer(EMBED_MODEL)
-
-    index = get_index()
-    total_chunks = 0
-
+    print(f"[Info] Found {len(pdf_files)} PDF file(s)")
+    total = 0
     for pdf_path in pdf_files:
         print(f"\n── Processing: {pdf_path.name}")
+        result = ingest_pdf(str(pdf_path))
+        print(f"   Stored: {result['chunks_ingested']} vectors ✓")
+        total += result["chunks_ingested"]
 
-        # 1. Extract text
-        text = extract_text(pdf_path)
-        if not text:
-            print(f"   [!] No extractable text — skipping.")
-            continue
-
-        # 2. Split into chunks
-        chunks = split_into_chunks(text)
-        print(f"   Chunks  : {len(chunks)}")
-
-        # 3. Embed all chunks at once (batched)
-        vectors = model.encode(
-            chunks,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-
-        # 4. Build upsert payload
-        items = [
-            {
-                "id": str(uuid.uuid4()),
-                "vector": vec.tolist(),
-                "meta": {
-                    "text": chunk,
-                    "filename": pdf_path.name,
-                    "chunk_index": i,
-                },
-            }
-            for i, (chunk, vec) in enumerate(zip(chunks, vectors))
-        ]
-
-        # 5. Upsert to Endee
-        index.upsert(items)
-        print(f"   Stored  : {len(items)} vectors  ✓")
-        total_chunks += len(items)
-
-    print(f"\n✅ Ingestion complete — {total_chunks} total chunks stored in Endee.")
+    print(f"\n✅ Done — {total} total chunks stored in Endee.")
 
 
 if __name__ == "__main__":
