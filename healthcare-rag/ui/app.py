@@ -19,6 +19,13 @@ st.set_page_config(
 
 st.title("🏥 Healthcare AI Assistant")
 st.caption("Upload a medical report, then ask questions about it.")
+
+st.warning(
+    "⚠️ **Disclaimer:** This Healthcare AI system is for educational and demonstration "
+    "purposes only. It does not provide medical advice, diagnosis, or treatment. "
+    "Always consult a qualified healthcare professional for medical concerns."
+)
+
 st.divider()
 
 # ── Session state ──────────────────────────────────────────────────────────
